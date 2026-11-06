@@ -117,9 +117,7 @@ test("unregister removes the peer and pushes the list to the remaining servers",
   await waitFor(
     () => server_A.pushes.length === 2 && server_B.pushes.length === 1,
   );
-  const { status } = await http.delete(`${tracker.url}/unregister`, {
-    data: { id: "B" },
-  });
+  const { status } = await http.delete(`${tracker.url}/unregister/B`);
 
   assert.equal(status, 204);
   assert.equal(tracker.registry.has("B"), false);
@@ -135,9 +133,7 @@ test("unregister of an unknown id answers 204 without pushing", async () => {
   await http.post(`${tracker.url}/register`, { id: "A", url: server_A.url });
 
   await waitFor(() => server_A.pushes.length === 1);
-  const { status } = await http.delete(`${tracker.url}/unregister`, {
-    data: { id: "ghost" },
-  });
+  const { status } = await http.delete(`${tracker.url}/unregister/ghost`);
   assert.equal(status, 204);
 
   await sleep(100);
