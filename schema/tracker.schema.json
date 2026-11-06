@@ -8,22 +8,30 @@
       "type": "object",
       "required": ["id", "url"],
       "properties": {
-        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,32}$" },
-        "url": { "type": "string", "pattern": "^https?://" }
+        "id": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
       }
     },
     "unregister": {
-      "title": "DELETE /unregister",
+      "title": "DELETE /unregister/:id (parametre de chemin, pas de body)",
       "type": "object",
       "required": ["id"],
       "properties": {
-        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,32}$" }
+        "id": {
+          "type": "string"
+        }
       }
     },
     "peers": {
       "title": "POST <serveur>/register (push du tracker vers chaque serveur)",
       "type": "array",
-      "items": { "$ref": "#/$defs/register" }
+      "items": {
+        "$ref": "#/$defs/register"
+      }
     }
   }
 }
