@@ -7,8 +7,7 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "tracker": "node src/bin/tracker.ts",
-    "node": "node src/bin/node.ts",
+    "start": "node --watch src/app.ts",
     "test": "node --test --test-timeout=20000 test/*.test.ts"
   },
   "dependencies": {
