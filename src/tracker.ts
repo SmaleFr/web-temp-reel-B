@@ -40,8 +40,8 @@ export const bootstrap = (axiosInstance: AxiosInstance): Express => {
     res.sendStatus(204);
   });
 
-  app.delete("/unregister", (req, res) => {
-    const { id } = req.body;
+  app.delete("/unregister/:id", (req, res) => {
+    const { id } = req.params;
 
     if (registry.delete(id)) {
       logger.info("Peer unregistered", { id });
