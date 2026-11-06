@@ -12,62 +12,18 @@
         "url": { "type": "string", "pattern": "^https?://" }
       }
     },
+    "unregister": {
+      "title": "DELETE /unregister",
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,32}$" }
+      }
+    },
     "peers": {
-      "title": "GET /peers (reponse)",
-      "type": "object",
-      "required": ["peers"],
-      "properties": {
-        "peers": { "type": "array", "items": { "$ref": "#/$defs/register" } }
-      }
-    },
-    "broadcast": {
-      "title": "POST /broadcast",
-      "type": "object",
-      "required": ["route"],
-      "properties": {
-        "route": { "enum": ["/syn", "/syn-ack", "/ack", "/forget", "/ingress", "/health", "/pong"] },
-        "method": { "enum": ["GET", "POST"] },
-        "body": { "type": "object" }
-      }
-    },
-    "broadcastResult": {
-      "title": "POST /broadcast (reponse)",
-      "type": "object",
-      "required": ["results"],
-      "properties": {
-        "results": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["id", "url", "status"],
-            "properties": {
-              "id": { "type": "string" },
-              "url": { "type": "string" },
-              "status": { "type": "integer" },
-              "error": { "type": "string" }
-            }
-          }
-        }
-      }
-    },
-    "ingress": {
-      "title": "Body d'un /ingress (protocole A)",
-      "type": "object",
-      "required": ["action", "metadata"],
-      "properties": {
-        "action": { "type": "string", "minLength": 1 },
-        "metadata": {
-          "type": "object",
-          "required": ["source", "target", "timestamp"],
-          "properties": {
-            "id": { "type": "string" },
-            "source": { "type": "string" },
-            "target": { "type": "string" },
-            "timestamp": { "type": "string", "format": "date-time" }
-          }
-        },
-        "payload": { "type": "object" }
-      }
+      "title": "POST <serveur>/register (push du tracker vers chaque serveur)",
+      "type": "array",
+      "items": { "$ref": "#/$defs/register" }
     }
   }
 }

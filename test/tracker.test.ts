@@ -1,98 +1,164 @@
-import { test, before, after } from "node:test";
+import { test, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import axios from "axios";
-import { waitFor } from "./helpers.ts";
 import express from "express";
 import type { Server } from "node:http";
-import { startTracker } from "../src/tracker.ts";
+import { sleep, waitFor } from "./helpers.ts";
+import { bootstrap, type Peer, type Registry } from "../src/tracker.ts";
+
+const TRACKER_ORIGIN = "http://tracker.test";
 
 const http = axios.create({ validateStatus: () => true });
-let tracker: Awaited<ReturnType<typeof startTracker>>;
+const servers: Array<{ close: () => Promise<void> }> = [];
 
-before(async () => {
-  tracker = await startTracker({ port: 0, ttl: 600 });
-});
+let tracker: { url: string; registry: Registry; close: () => Promise<void> };
 
-after(() => tracker.stop());
-
-test("register then list peers", async () => {
-  assert.equal((await http.post(`${tracker.url}/register`, { id: "alice", url: "http://localhost:6001" })).status, 204);
-  assert.equal((await http.post(`${tracker.url}/register`, { id: "bob", url: "http://localhost:6002/" })).status, 204);
-  const { status, data } = await http.get(`${tracker.url}/peers`);
-  assert.equal(status, 200);
-  assert.deepEqual(data.peers.sort((a: any, b: any) => a.id.localeCompare(b.id)), [
-    { id: "alice", url: "http://localhost:6001" },
-    { id: "bob", url: "http://localhost:6002" },
-  ]);
-});
-
-test("register rejects invalid bodies", async () => {
-  for (const body of [{}, { id: "x" }, { url: "http://a" }, { id: "bad id", url: "http://a" }, { id: "x", url: "ws://a" }]) {
-    assert.equal((await http.post(`${tracker.url}/register`, body)).status, 400, JSON.stringify(body));
-  }
-  const bad = await http.post(`${tracker.url}/register`, "{oops", { headers: { "Content-Type": "application/json" } });
-  assert.equal(bad.status, 400);
-});
-
-test("unregister removes an entry and is idempotent", async () => {
-  await http.post(`${tracker.url}/register`, { id: "carol", url: "http://localhost:6003" });
-  assert.equal((await http.delete(`${tracker.url}/unregister/carol`)).status, 204);
-  assert.equal((await http.delete(`${tracker.url}/unregister/carol`)).status, 204);
-  assert.equal(tracker.registry.has("carol"), false);
-});
-
-test("entries expire after the ttl unless re-registered", async () => {
-  await http.post(`${tracker.url}/register`, { id: "ghost", url: "http://localhost:6009" });
-  await waitFor(() => !tracker.registry.has("ghost"), 2000);
-  const peers = (await http.get(`${tracker.url}/peers`)).data.peers;
-  assert.equal(peers.some((p: { id: string }) => p.id === "ghost"), false);
-});
-
-const fakePeer = async (statusFor: (path: string) => number) => {
-  const calls: Array<{ method: string; path: string; origin?: string; body: unknown }> = [];
-  const app = express();
-  app.use(express.json());
-  app.all(/.*/, (req, res) => {
-    calls.push({ method: req.method, path: req.path, origin: req.headers.origin, body: req.body });
-    res.sendStatus(statusFor(req.path));
-  });
+const listen = async (app: express.Express) => {
   const server = await new Promise<Server>((resolve) => {
     const s = app.listen(0, () => resolve(s));
   });
+
   const url = `http://localhost:${(server.address() as { port: number }).port}`;
-  return { url, calls, close: () => new Promise<void>((resolve) => (server.closeAllConnections(), server.close(() => resolve()))) };
+
+  const close = () =>
+    new Promise<void>((resolve) => {
+      server.closeAllConnections();
+      server.close(() => resolve());
+    });
+
+  return { url, close };
 };
 
-test("broadcast relays a route to every other peer with the sender Origin", async () => {
-  tracker.registry.clear();
-  const a = await fakePeer(() => 202);
-  const b = await fakePeer(() => 202);
-  const c = await fakePeer(() => 403);
-  await http.post(`${tracker.url}/register`, { id: "A", url: a.url });
-  await http.post(`${tracker.url}/register`, { id: "B", url: b.url });
-  await http.post(`${tracker.url}/register`, { id: "C", url: c.url });
-  await http.post(`${tracker.url}/register`, { id: "D", url: "http://localhost:1" });
-  const { status, data } = await http.post(`${tracker.url}/broadcast`, { route: "/syn" }, { headers: { Origin: a.url } });
-  assert.equal(status, 200);
-  const byId = Object.fromEntries(data.results.map((r: any) => [r.id, r.status]));
-  assert.deepEqual(byId, { B: 202, C: 403, D: 0 });
-  assert.equal(a.calls.length, 0);
-  assert.deepEqual(b.calls, [{ method: "POST", path: "/syn", origin: a.url, body: {} }]);
-  const health = await http.post(`${tracker.url}/broadcast`, { route: "/health" }, { headers: { Origin: a.url } });
-  assert.equal(health.status, 200);
-  assert.equal(b.calls[1].method, "GET");
-  const body = { action: "message", metadata: { source: a.url, target: "*", timestamp: new Date().toISOString() }, payload: { text: "hi" } };
-  await http.post(`${tracker.url}/broadcast`, { route: "/ingress", body }, { headers: { Origin: a.url } });
-  assert.deepEqual(b.calls[2].body, body);
-  await Promise.all([a.close(), b.close(), c.close()]);
+before(async () => {
+  const app = bootstrap(
+    axios.create({ headers: { Origin: TRACKER_ORIGIN }, timeout: 1000 }),
+  );
+  tracker = { ...(await listen(app)), registry: app.locals.registry };
+});
+
+after(() => tracker.close());
+
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map((s) => s.close()));
   tracker.registry.clear();
 });
 
-test("broadcast validates Origin, route and registration", async () => {
-  await http.post(`${tracker.url}/register`, { id: "A", url: "http://localhost:7001" });
-  assert.equal((await http.post(`${tracker.url}/broadcast`, { route: "/syn" })).status, 400);
-  assert.equal((await http.post(`${tracker.url}/broadcast`, { route: "/nope" }, { headers: { Origin: "http://localhost:7001" } })).status, 400);
-  assert.equal((await http.post(`${tracker.url}/broadcast`, { route: "/syn", method: "PUT" }, { headers: { Origin: "http://localhost:7001" } })).status, 400);
-  assert.equal((await http.post(`${tracker.url}/broadcast`, { route: "/syn" }, { headers: { Origin: "http://localhost:7999" } })).status, 403);
-  tracker.registry.clear();
+const byId = (peers: Peer[]) =>
+  [...peers].sort((a, b) => a.id.localeCompare(b.id));
+
+const fakeReceiver = async () => {
+  const app = express();
+  app.use(express.json());
+
+  const pushes: Array<{ origin?: string; body: Peer[] }> = [];
+
+  app.post("/register", (req, res) => {
+    pushes.push({ origin: req.headers.origin, body: req.body });
+    res.sendStatus(204);
+  });
+
+  const { url, close } = await listen(app);
+
+  servers.push({ close });
+
+  return { url, pushes, last: () => pushes.at(-1)?.body ?? [] };
+};
+
+test("register stores the peer", async () => {
+  const { status } = await http.post(`${tracker.url}/register`, {
+    id: "alice",
+    url: "http://localhost:1",
+  });
+
+  assert.equal(status, 204);
+
+  assert.deepEqual(tracker.registry.get("alice"), {
+    id: "alice",
+    url: "http://localhost:1",
+  });
+});
+
+test("malformed JSON is rejected", async () => {
+  const { status } = await http.post(`${tracker.url}/register`, "{oops", {
+    headers: { "Content-Type": "application/json" },
+  });
+
+  assert.equal(status, 400);
+});
+
+test("register pushes the full peer list to every registered server", async () => {
+  const server_A = await fakeReceiver();
+  const server_B = await fakeReceiver();
+
+  await http.post(`${tracker.url}/register`, { id: "A", url: server_A.url });
+  await waitFor(() => server_A.pushes.length === 1);
+  assert.deepEqual(server_A.last(), [{ id: "A", url: server_A.url }]);
+  assert.equal(server_A.pushes[0].origin, TRACKER_ORIGIN);
+
+  await http.post(`${tracker.url}/register`, { id: "B", url: server_B.url });
+  const expected = byId([
+    { id: "A", url: server_A.url },
+    { id: "B", url: server_B.url },
+  ]);
+  await waitFor(
+    () => server_A.pushes.length === 2 && server_B.pushes.length === 1,
+  );
+  assert.deepEqual(byId(server_A.last()), expected);
+  assert.deepEqual(byId(server_B.last()), expected);
+});
+
+test("unregister removes the peer and pushes the list to the remaining servers", async () => {
+  const server_A = await fakeReceiver();
+  await http.post(`${tracker.url}/register`, { id: "A", url: server_A.url });
+
+  const server_B = await fakeReceiver();
+  await http.post(`${tracker.url}/register`, { id: "B", url: server_B.url });
+
+  await waitFor(
+    () => server_A.pushes.length === 2 && server_B.pushes.length === 1,
+  );
+  const { status } = await http.delete(`${tracker.url}/unregister`, {
+    data: { id: "B" },
+  });
+
+  assert.equal(status, 204);
+  assert.equal(tracker.registry.has("B"), false);
+
+  await waitFor(() => server_A.pushes.length === 3);
+  assert.deepEqual(server_A.last(), [{ id: "A", url: server_A.url }]);
+  await sleep(100);
+  assert.equal(server_B.pushes.length, 1);
+});
+
+test("unregister of an unknown id answers 204 without pushing", async () => {
+  const server_A = await fakeReceiver();
+  await http.post(`${tracker.url}/register`, { id: "A", url: server_A.url });
+
+  await waitFor(() => server_A.pushes.length === 1);
+  const { status } = await http.delete(`${tracker.url}/unregister`, {
+    data: { id: "ghost" },
+  });
+  assert.equal(status, 204);
+
+  await sleep(100);
+  assert.equal(server_A.pushes.length, 1);
+});
+
+test("an unreachable server does not block the push to the others", async () => {
+  const server_A = await fakeReceiver();
+  await http.post(`${tracker.url}/register`, {
+    id: "down",
+    url: "http://localhost:1",
+  });
+
+  await http.post(`${tracker.url}/register`, { id: "A", url: server_A.url });
+
+  await waitFor(() => server_A.pushes.length === 1);
+  assert.deepEqual(
+    byId(server_A.last()),
+    byId([
+      { id: "A", url: server_A.url },
+      { id: "down", url: "http://localhost:1" },
+    ]),
+  );
 });
