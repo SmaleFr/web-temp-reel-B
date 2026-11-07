@@ -149,12 +149,31 @@ test("an unreachable server does not block the push to the others", async () => 
 
   await http.post(`${tracker.url}/register`, { id: "A", url: server_A.url });
 
-  await waitFor(() => server_A.pushes.length === 1);
+  await waitFor(() => server_A.pushes.length >= 1);
   assert.deepEqual(
-    byId(server_A.last()),
+    byId(server_A.pushes[0].body),
     byId([
       { id: "A", url: server_A.url },
       { id: "down", url: "http://localhost:1" },
     ]),
   );
+});
+
+test("a server that fails every retry is removed and the others are told", async () => {
+  const server_A = await fakeReceiver();
+
+  await http.post(`${tracker.url}/register`, { id: "A", url: server_A.url });
+  await waitFor(() => server_A.pushes.length === 1);
+
+  await http.post(`${tracker.url}/register`, {
+    id: "down",
+    url: "http://localhost:1",
+  });
+
+  await waitFor(() => !tracker.registry.has("down"), 5000);
+  await waitFor(
+    () => server_A.last().every((peer) => peer.id !== "down"),
+    5000,
+  );
+  assert.deepEqual(server_A.last(), [{ id: "A", url: server_A.url }]);
 });
